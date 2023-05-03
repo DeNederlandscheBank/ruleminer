@@ -240,6 +240,8 @@ will return
      - 1
      - if({"TP-life"}>0)then({"Type"}=="life insurer")
 
+If you feel confident then you can set autocorrect=True, and subsequently the data will be corrected with the proposed suggestions.
+
 Rule examples
 ~~~~~~~~~~~~~
 
