@@ -128,13 +128,13 @@ Calculating metrics
 
 Take the rule::
 
-    if ({"Type"} == "life_insurer") then ({"TP-life"} > 0)
+    if ({"TP-life"} > 0) then ({"Type"} == "life_insurer")
 
-This rule says: if an insurer reports for column "Type" (noted by the curved brackets) the value "life_insurer" then the value of the column "TP-life" should be higher than zero. 
+This rule says: if an insurer reports for the column "TP-life" a value higher than zero then the column "Type" (noted by the curved brackets) should have the value "life_insurer". 
 
 With the code::
 
-    templates = [{'expression': 'if ({"Type"} == "life_insurer") then ({"TP-life"} > 0)'}]
+    templates = [{'expression': 'if ({"TP-life"} > 0) then ({"Type"} == "life_insurer")'}]
     
     r = ruleminer.RuleMiner(templates=templates, data=df)
 
@@ -152,7 +152,7 @@ you can generate the rule metrics of this rule given the data in the DataFrame a
      - confidence
      - encodings
    * - 1
-     - if ({"Type"} == "life_insurer") then ({"TP-life"} > 0)
+     - if ({"TP-life"} > 0) then ({"Type"} == "life_insurer")
      - None
      - 5
      - 0
@@ -174,7 +174,7 @@ will satisfy column names::
 
 So, if you apply the following rule ::
 
-    if ({"T.*"} == ".*") then ({"TP.*"} > 0)
+    if ({"TP.*"} > 0) then ({"T.*"} == ".*")
 
 then the following rules are generated
 
@@ -190,14 +190,14 @@ then the following rules are generated
      - confidence
      - encodings
    * - 0
-     - if ({"Type"} == "non-life_insurer") then ({"TP-nonlife"} > 0)
+     - if ({"TP-nonlife"} > 0) then ({"Type"} == "non-life_insurer")
      - None
      - 4
      - 1
      - 0.8
      - {}
    * - 1
-     - if ({"Type"} == "life_insurer") then ({"TP-life"} > 0)
+     - if ({"TP-life"} > 0) then ({"Type"} == "life_insurer")
      - None
      - 5
      - 0
@@ -209,6 +209,36 @@ You can use rules without an if-clause, for example::
     {"Assets"} > 0
 
 The metrics for these rules are calculated as if the if-clause is always satisfied.
+
+Rules-based suggestions
+~~~~~~~~~~~~~~~~~~~~~~~
+
+If the right hand side of the rule has a relatively simple form, then it is possible to generate suggestions. 
+
+With the rules generated above you can call the suggest-function in ruleminer object, so::
+
+    r = suggest()
+
+will return
+
+.. list-table:: Generated suggestions
+   :widths: 5 15 15 15 15 15 20
+   :header-rows: 1
+
+   * - row
+     - column
+     - original
+     - suggested
+     - confidence
+     - rule_index
+     - rule_def
+   * - 8
+     - Type
+     - non-life_insurer
+     - life_insurer
+     - 0.833333
+     - 1
+     - if({"TP-life"}>0)then({"Type"}=="life insurer")
 
 Rule examples
 ~~~~~~~~~~~~~
@@ -372,13 +402,13 @@ The syntax of the template follows a grammar defined as follows:
 
     comp_1
 
-* a *comparison* consists of a *term*, a *comparison operator* (>=, >, <=, <, != or ==) and a *term*, so::
+* a *comparison* consists of a *term*, a *comparison operator* (>=, >, <=, <, !=, == or *in*) and a *term*, so::
 
     term_1 > term_2
 
 * a *term* can be a *number* (e.g. 3.1415 or 9), *quoted string* (a string with single or double quotes), or a *function of columns*
 
-* a *function of columns* is either a prefix operator (min, max, quantile, or abs, in lower or uppercase) on one or more *columns*, and of the form, for example::
+* a *function of columns* is either a prefix operator (min, max, quantile, abs, sum or substr in lower or uppercase) on one or more *columns*, and of the form, for example::
 
     min(col_1, col_2, col_3)
 
