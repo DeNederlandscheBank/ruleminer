@@ -166,26 +166,43 @@ class RuleMiner:
             )
             self.add_results(idx, rule_metrics, results[VAR_X_AND_Y], results[VAR_X_AND_NOT_Y])
 
-    def suggest(self):
+        return self.results
+
+    def suggest(self, 
+                data: pd.DataFrame = None,
+                autocorrect: bool=False):
         """
         Function to generate suggestions for data that do not satisfy the rules
         """
         logger = logging.getLogger(__name__)
         assert self.rules is not None, "Unable to create suggestions, no rules defined."
-        assert self.data is not None, "Unable to create suggestions, no data defined."
+        if data is None:
+            assert self.data is not None, "Unable to create suggestions, no data defined."
+            data = self.data
 
         # add temporary index columns (to allow rules based on index data)
-        for level in range(len(self.data.index.names)):
-            self.data[
-                str(self.data.index.names[level])
-            ] = self.data.index.get_level_values(level=level)
+        for level in range(len(data.index.names)):
+            data[
+                str(data.index.names[level])
+            ] = data.index.get_level_values(level=level)
 
         suggestions = []
         # a sampled list is used to change the order of the rules 
         # every time suggestions are created
         for idx in random.sample(list(self.rules.index), len(self.rules.index)):
+
             expression = self.rules.loc[idx, RULE_DEF]
             confidence = self.rules.loc[idx, CONFIDENCE]
+
+            required_vars = required_variables(
+                [ABSOLUTE_SUPPORT, ABSOLUTE_EXCEPTIONS, CONFIDENCE]
+            )
+            expression = self.rules.loc[idx, RULE_DEF]
+            rule_code = parser.python_code_index(
+                expression=expression, required=required_vars
+            )
+            results = self.evaluate_code(expressions=rule_code, dataframe=data)
+
             try:
                 parsed, if_part, then_part = self.split_rule(expression=expression)
             except:
@@ -193,76 +210,96 @@ class RuleMiner:
                     'Parsing error in expression "' + str(expression) + '"'
                 )
                 return None
-            df_code = parser.python_code_for_columns(expression=flatten(if_part))
-            # df_eval is the dataframe that satisfies the if-part
-            df_eval = self.evaluate_code(expressions=df_code, dataframe=self.data)[VAR_Z]
-            # extract then-part suggestions
+
             statements = []
             self.reformulate_to_statements(then_part, statements)
-            for data_index in df_eval.index:
+            for data_index in results[VAR_X_AND_NOT_Y]:
                 for statement in statements:
                     if is_column(statement[0]):
                         lhs_column = statement[0][2:-2]
-                        lhs_value = self.data.loc[data_index, lhs_column]
+                        lhs_value = data.loc[data_index, lhs_column]
                     elif is_string(statement[0]):
                         lhs_column = None
                         lhs_value = statement[0][1:-1]
                     else:
                         lhs_column = None
-                        lhs_value = float(statement[0])
+                        if "." in statement[0]:
+                            lhs_value = float(statement[0])
+                        else:
+                            lhs_value = int(statement[0])
                     if is_column(statement[2]):
                         rhs_column = statement[2][2:-2]
-                        rhs_value = self.data.loc[data_index, rhs_column]
+                        rhs_value = data.loc[data_index, rhs_column]
                     elif is_string(statement[2]):
                         rhs_column = None
                         rhs_value = statement[2][1:-1]
                     else:
                         rhs_column = None
-                        rhs_value = float(statement[2])
+                        if "." in statement[0]:
+                            rhs_value = float(statement[2])
+                        else:
+                            rhs_value = int(statement[2])
 
-                    if lhs_value != rhs_value:
-                        if lhs_column is not None and rhs_column is None:
-                            # if left-hand-side is column value and right-hand-side is value
-                            column = lhs_column
-                            original_value = lhs_value
-                            suggested_value = rhs_value
-                        elif rhs_column is not None and lhs_column is None:
-                            # if right-hand-side is column value and left-hand-side is value
+                    if lhs_column is not None and rhs_column is None:
+                        # if left-hand-side is column value and right-hand-side is value
+                        column = lhs_column
+                        original_value = lhs_value
+                        suggested_value = rhs_value
+                    elif rhs_column is not None and lhs_column is None:
+                        # if right-hand-side is column value and left-hand-side is value
+                        column = rhs_column
+                        original_value = rhs_value
+                        suggested_value = lhs_value
+                    elif lhs_column is not None and rhs_column is not None:
+                        # if both left and right-hand-side are column values
+                        if (pd.isna(rhs_value) or rhs=="") and not (pd.isna(lhs_value) or lhs==""):
                             column = rhs_column
                             original_value = rhs_value
                             suggested_value = lhs_value
-                        elif lhs_column is not None and rhs_column is not None:
-                            # if both left and right-hand-side are column values
-                            if (pd.isna(rhs_value) or rhs=="") and not (pd.isna(lhs_value) or lhs==""):
-                                column = rhs_column
-                                original_value = rhs_value
-                                suggested_value = lhs_value
-                            if (pd.isna(lhs_value) or lhs=="") and not (pd.isna(rhs_value) or rhs==""):
-                                column = lhs_column
-                                original_value = lhs_value
-                                suggested_value = rhs_value
-                            elif random.choice([True, False]):
-                                column = rhs_column
-                                original_value = rhs_value
-                                suggested_value = lhs_value
-                            else:
-                                column = lhs_column
-                                original_value = lhs_value
-                                suggested_value = rhs_value
-                        suggestions.append(
-                            [
-                                data_index, 
-                                column,
-                                original_value,
-                                suggested_value,
-                                confidence,
-                                idx,
-                                expression,
-                            ]
+                        if (pd.isna(lhs_value) or lhs=="") and not (pd.isna(rhs_value) or rhs==""):
+                            column = lhs_column
+                            original_value = lhs_value
+                            suggested_value = rhs_value
+                        elif random.choice([True, False]):
+                            column = rhs_column
+                            original_value = rhs_value
+                            suggested_value = lhs_value
+                        else:
+                            column = lhs_column
+                            original_value = lhs_value
+                            suggested_value = rhs_value
+
+                    if statement[1] in ["==", ">=", "<="]:
+                        pass
+                    elif statement[1] == ">":
+                        if not isinstance(suggested_value, str):
+                            suggested_value = suggested_value+0.01
+                    elif statement[1] == "<":
+                        if not isinstance(suggested_value, str):
+                            suggested_value = suggested_value-0.01
+                    else:
+                        logger.error(
+                            'Not able to create suggestions with expression with operator ' + str(expression[1])
                         )
+
+                    if autocorrect:
+                        data.loc[data_index, column] = suggested_value
+
+                    suggestions.append(
+                        [
+                            data_index, 
+                            column,
+                            original_value,
+                            suggested_value,
+                            confidence,
+                            idx,
+                            expression,
+                        ]
+                    )
+
         # remove temporarily added index columns
-        for level in range(len(self.data.index.names)):
-            del self.data[str(self.data.index.names[level])]
+        for level in range(len(data.index.names)):
+            del self.data[str(data.index.names[level])]
 
         return pd.DataFrame(index=range(len(suggestions)),
                             columns=['row', 'column', 'original', 'suggested', 'confidence', 'rule_index', 'rule_def'],
@@ -605,12 +642,7 @@ class RuleMiner:
         logger = logging.getLogger(__name__)
         if not isinstance(expression, str):
             if len(expression)==3:
-                if expression[1] in ["==", ">=", "<="]:
-                    statements.append([expression[0], "=", expression[2]])
-                else:
-                    logger.error(
-                        'Not able to create suggestions with expression with operator ' + str(expression[1])
-                    )
+                statements.append(expression)
             elif len(expression)==1:
                 self.reformulate_to_statements(expression=expression[0], statements=statements)
             else:
