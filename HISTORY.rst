@@ -70,3 +70,35 @@ History
 
 * Dedicated function added for template to rule conversion without data
 * Exp sign changed from ^ to **
+
+0.1.19 (2023-8-27)
+------------------
+
+* Small fixes rule conversion without data
+
+0.1.20 (2023-8-29)
+------------------
+
+* Small fixes in evaluating rules with syntax errors
+
+0.1.21 (2023-10-11)
+-------------------
+
+* changed sum to nansum
+* added tolerance functionality for ==
+
+0.1.22 (2023-10-17)
+-------------------
+
+* added tolerance functionality for !=, <, <=, > and >=
+* updated docs
+
+0.1.23 (2023-10-18)
+-------------------
+
+* added nested conditions in functions
+
+0.1.24 (2023-10-25)
+-------------------
+
+* added sumif and improved tolerance functionality

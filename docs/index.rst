@@ -1,17 +1,18 @@
 Welcome to ruleminer's documentation!
-======================================
+=====================================
 
 .. toctree::
    :maxdepth: 2
    :caption: Contents:
 
-   readme
+   Overview <README>
    installation
    usage
-   modules
-   contributing
-   authors
-   history
+   Contributions & Help <contributing>
+   License <license>
+   Authors <authors>
+   Module Reference <api/modules>
+
 
 Indices and tables
 ==================
