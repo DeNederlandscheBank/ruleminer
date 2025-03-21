@@ -5,6 +5,8 @@ import pandas as pd
 import numpy as np
 from .const import (
     DUNDER_DF,
+    COMPARISONS,
+    STATISTICS,
 )
 
 
@@ -23,7 +25,7 @@ class CodeEvaluator:
 
     The class maintains an internal `globals` dictionary that contains:
     - Mathematical functions from `numpy` (e.g., `max`, `min`, `abs`, `sum`, `quantile`).
-    - Helper functions for comparisons (`_equal`, `_unequal`) and tolerance calculations (`_tol`).
+    - Helper functions for comparisons (`_eq`, `_ne`) and tolerance calculations (`_tol`).
     - References to `numpy` itself and `numpy.nan`.
 
     Attributes:
@@ -43,7 +45,20 @@ class CodeEvaluator:
 
     def __init__(
         self,
+        params: dict,
     ):
+        """
+        Sets up the evaluator object by setting globals and params foe evaluation
+        """
+        self.logger = logging.getLogger(__name__)
+        self.set_params(params)
+        self.set_globals()
+        self._mean_logs = []
+        self._std_logs = []
+        self._quantile_logs = []
+        self._eval_logs = []
+
+    def set_globals(self):
         """
         Initializes the CodeEvaluator object with a set of predefined mathematical functions
         and helper methods for evaluating expressions.
@@ -58,9 +73,9 @@ class CodeEvaluator:
         - 'nan': Reference to `numpy.nan`.
         - '_tol': A helper function that calculates tolerance for a given value based on
           predefined ranges and decimal precision.
-        - '_equal': A helper function that checks if two values (considering both positive
+        - '_eq': A helper function that checks if two values (considering both positive
           and negative sides) are equal.
-        - '_unequal': A helper function that checks if two values (considering both positive
+        - '_ne': A helper function that checks if two values (considering both positive
           and negative sides) are unequal.
 
         These functions are added to the `globals` attribute of the object, making them available
@@ -73,29 +88,100 @@ class CodeEvaluator:
         Notes:
         - The tolerance functions rely on the `self.tolerance` attribute, which must be set
           separately for proper functionality.
-
         """
-        self.globals = {
-            "MAX": np.maximum,
-            "MIN": np.minimum,
-            "ABS": np.abs,
-            "QUANTILE": np.quantile,
-            "SUM": np.sum,
-            "MEAN": np.mean,
-            "STD": np.std,
-            "max": np.maximum,
-            "min": np.minimum,
-            "abs": np.abs,
-            "quantile": np.quantile,
-            "sum": np.sum,
-            "mean": np.mean,
-            "std": np.std,
-            "np": np,
-            "nan": np.nan,
-        }
-        self.logger = logging.getLogger(__name__)
 
-        # general tolerance function
+        def _mean_with_logging(*args):
+            """
+            np.mean calculation with logging
+            """
+            r = np.mean(args[0])
+            log = 'mean["' + str(args[0].name) + '"]=' + str(np.round(r, 8))
+            if log not in self._mean_logs:
+                self._mean_logs.append(log)
+            return r
+
+        def _std_with_logging(*args):
+            """
+            np.std calculation with logging
+            """
+            r = np.std(args[0])
+            log = 'std["' + str(args[0].name) + '"]=' + str(np.round(r, 8))
+            if log not in self._std_logs:
+                self._std_logs.append(log)
+            return r
+
+        def _quantile_with_logging(*args):
+            """
+            np.quantile calculation with logging
+            """
+            r = np.quantile(args[0], args[1])
+            log = (
+                'quantile["'
+                + str(args[0].name)
+                + '",'
+                + str(args[1])
+                + "]="
+                + str(np.round(r, 8))
+            )
+            if log not in self._quantile_logs:
+                self._quantile_logs.append(log)
+            return r
+
+        def _abs(a_pos, a_neg, direction: str):
+            """ """
+            if direction == "+":
+                # [-3, -1] -> upper limit of abs is 3
+                # [-3, 1] -> upper limit of abs is 3
+                # [1, 4] -> upper limit of abs is 4
+                # so plain max of abs(pos) and abs(neg)
+                return pd.concat(
+                    [
+                        np.abs(a_pos),
+                        np.abs(a_neg),
+                    ],
+                    join="inner",
+                    ignore_index=True,
+                    axis=1,
+                ).max(axis=1)
+            elif direction == "-":
+                # [-3, -1] -> lower limit of abs is 1
+                # [-3, 1] -> lower limit of abs is 0
+                # [1, 4] -> lower limit of abs is 1
+                # so min of abs(pos) and abs(neg), except if neg < 0 and pos > 0 (then the result should be 0)
+                return (
+                    pd.concat(
+                        [
+                            np.abs(a_pos),
+                            np.abs(a_neg),
+                        ],
+                        join="inner",
+                        ignore_index=True,
+                        axis=1,
+                    )
+                    .where(~((a_neg < 0) & (a_pos > 0)), 0)
+                    .min(axis=1)
+                )
+
+        def _round(*args):
+            """
+            Internal rounding function
+            pd.Series: args[0]
+            nummber_of_decimals: args[1]
+            rounding_type: args[2]
+            """
+            scale = 10 ** args[1]
+            scaled_values = args[0] * scale
+            integer_values = scaled_values // 1
+            if args[2] == "round":
+                remainder_values = np.where(
+                    (scaled_values - integer_values) >= 0.5, 1, 0
+                )
+            elif args[2] == "ceil":
+                remainder_values = np.where((scaled_values - integer_values) > 0, 1, 0)
+            elif args[2] == "floor":
+                remainder_values = 0
+            return (integer_values + remainder_values) / scale
+
         def _tol(value, direction=bool, column=None):
             """
             Adjusts the given numerical value based on the specified tolerance and direction for a given column.
@@ -128,8 +214,12 @@ class CodeEvaluator:
                 # Adjust the value 5.75 based on the tolerance for 'some_column' and direction '+'
             """
             if pd.isna(value):
-                return np.nan
+                return value
             elif isinstance(value, str):
+                return value
+            elif isinstance(value, np.datetime64):
+                return value
+            elif isinstance(value, pd.Timestamp):
                 return value
             for key, tol in self.tolerance.items():
                 if key == column:
@@ -140,7 +230,7 @@ class CodeEvaluator:
                             else:
                                 return value - 0.5 * 10 ** (decimals)
 
-        def _equal(
+        def _eq_with_logging(
             left_side,
             right_side,
             left_side_pos,
@@ -148,60 +238,28 @@ class CodeEvaluator:
             right_side_pos,
             right_side_neg,
         ):
-            if (
-                any(
-                    [
-                        p(left_side)
-                        for p in [
-                            pd.api.types.is_string_dtype,
-                            pd.api.types.is_bool_dtype,
-                            pd.api.types.is_datetime64_ns_dtype,
-                        ]
-                    ]
-                )
-            ) or (
-                any(
-                    [
-                        p(right_side)
-                        for p in [
-                            pd.api.types.is_string_dtype,
-                            pd.api.types.is_bool_dtype,
-                            pd.api.types.is_datetime64_ns_dtype,
-                        ]
-                    ]
-                )
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
             ):
                 return left_side == right_side
             else:
-                if logging.DEBUG == logging.root.level:
-                    lhs = [
-                        (str(a), str(b))
-                        for a, b in zip(
-                            np.minimum(left_side_pos, left_side_neg),
-                            np.maximum(left_side_pos, left_side_neg),
-                        )
-                    ]
-                    rhs = [
-                        (str(a), str(b))
-                        for a, b in zip(
-                            np.minimum(right_side_pos, right_side_neg),
-                            np.maximum(right_side_pos, right_side_neg),
-                        )
-                    ]
-                    self.logger.debug("Evaluating equality:")
-                    for idx in range(len(lhs)):
-                        self.logger.debug(
-                            "  LHS: " + str(lhs[idx]) + ", RHS: " + str(rhs[idx])
-                        )
-                return (
-                    np.maximum(left_side_pos, left_side_neg)
-                    >= np.minimum(right_side_pos, right_side_neg)
-                ) & (
-                    np.minimum(left_side_pos, left_side_neg)
-                    <= np.maximum(right_side_pos, right_side_neg)
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                self._log(
+                    left_side,
+                    right_side,
+                    min_left,
+                    max_left,
+                    min_right,
+                    max_right,
+                    "==",
                 )
+                return (max_left >= min_right) & (min_left <= max_right)
 
-        def _unequal(
+        def _eq(
             left_side,
             right_side,
             left_side_pos,
@@ -209,60 +267,260 @@ class CodeEvaluator:
             right_side_pos,
             right_side_neg,
         ):
-            if (
-                any(
-                    [
-                        p(left_side)
-                        for p in [
-                            pd.api.types.is_string_dtype,
-                            pd.api.types.is_bool_dtype,
-                            pd.api.types.is_datetime64_ns_dtype,
-                        ]
-                    ]
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side == right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                return (max_left >= min_right) & (min_left <= max_right)
+
+        def _le(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side <= right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                return min_left <= max_right
+
+        def _le_with_logging(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side <= right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                self._log(
+                    left_side,
+                    right_side,
+                    min_left,
+                    max_left,
+                    min_right,
+                    max_right,
+                    "<=",
                 )
-            ) or (
-                any(
-                    [
-                        p(right_side)
-                        for p in [
-                            pd.api.types.is_string_dtype,
-                            pd.api.types.is_bool_dtype,
-                            pd.api.types.is_datetime64_ns_dtype,
-                        ]
-                    ]
+                return min_left <= max_right
+
+        def _lt(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side < right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                return (min_left <= max_right) & (max_left < min_right)
+
+        def _lt_with_logging(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side < right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                self._log(
+                    left_side,
+                    right_side,
+                    min_left,
+                    max_left,
+                    min_right,
+                    max_right,
+                    "<",
                 )
+                return (min_left <= max_right) & (max_left < min_right)
+
+        def _ge(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side >= right_side
+            else:
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                return max_left >= min_right
+
+        def _ge_with_logging(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side >= right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                self._log(
+                    left_side,
+                    right_side,
+                    min_left,
+                    max_left,
+                    min_right,
+                    max_right,
+                    ">=",
+                )
+                return max_left >= min_right
+
+        def _gt(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side > right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                return (max_left >= min_right) & (min_left > max_right)
+
+        def _gt_with_logging(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side > right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                self._log(
+                    left_side,
+                    right_side,
+                    min_left,
+                    max_left,
+                    min_right,
+                    max_right,
+                    ">",
+                )
+                return (max_left >= min_right) & (min_left > max_right)
+
+        def _ne_with_logging(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
             ):
                 return left_side != right_side
             else:
-                if logging.DEBUG == logging.root.level:
-                    lhs = [
-                        (str(a), str(b))
-                        for a, b in zip(
-                            np.minimum(left_side_pos, left_side_neg),
-                            np.maximum(left_side_pos, left_side_neg),
-                        )
-                    ]
-                    rhs = [
-                        (str(a), str(b))
-                        for a, b in zip(
-                            np.minimum(right_side_pos, right_side_neg),
-                            np.maximum(right_side_pos, right_side_neg),
-                        )
-                    ]
-                    self.logger.debug("Evaluating inequality:")
-                    for idx in range(len(lhs)):
-                        self.logger.debug(
-                            "  LHS: " + str(lhs[idx]) + ", RHS: " + str(rhs[idx])
-                        )
-                return (
-                    np.minimum(left_side_pos, left_side_neg)
-                    < np.maximum(right_side_pos, right_side_neg)
-                ) | (
-                    np.maximum(left_side_pos, left_side_neg)
-                    > np.minimum(right_side_pos, right_side_neg)
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                self._log(
+                    left_side,
+                    right_side,
+                    min_left,
+                    max_left,
+                    min_right,
+                    max_right,
+                    "!=",
                 )
+                return ~((max_left >= min_right) & (min_left <= max_right))
 
-        def _multiply(a_pos, a_neg, b_pos, b_neg, direction: str):
+        def _ne(
+            left_side,
+            right_side,
+            left_side_pos,
+            left_side_neg,
+            right_side_pos,
+            right_side_neg,
+        ):
+            """ """
+            if (self.datatype_not_apply_xbrl_tolerance(left_side)) or (
+                self.datatype_not_apply_xbrl_tolerance(right_side)
+            ):
+                return left_side != right_side
+            else:
+                min_left = np.minimum(left_side_pos, left_side_neg)
+                max_left = np.maximum(left_side_pos, left_side_neg)
+                min_right = np.minimum(right_side_pos, right_side_neg)
+                max_right = np.maximum(right_side_pos, right_side_neg)
+                return ~((max_left >= min_right) & (min_left <= max_right))
+
+        def _mul(a_pos, a_neg, b_pos, b_neg, direction: str):
             """
             Perform multiplication based on the given direction and return the maximum or minimum result
             based on the values of a+, a-, b+, b-.
@@ -295,7 +553,7 @@ class CodeEvaluator:
                     axis=1,
                 ).min(axis=1)
 
-        def _divide(a_pos, a_neg, b_pos, b_neg, direction: str):
+        def _div(a_pos, a_neg, b_pos, b_neg, direction: str):
             """
             Perform division based on the given direction and return the maximum or minimum result
             based on the values of a+, a-, b+, b-.
@@ -328,11 +586,330 @@ class CodeEvaluator:
                     axis=1,
                 ).min(axis=1)
 
+        def _corr(
+            key: str,
+            *columns,
+        ):
+            """
+            # (sum r,s Corr (r,s) * column (r) * column (s)
+            """
+            if key not in list(self.matrices.keys()):
+                logging.error(
+                    'Matrix key "'
+                    + key
+                    + '" is not in predefined matrices dictionary of parameters.'
+                )
+            m = self.matrices[key]
+            columns = list(columns)
+            for i in range(len(columns)):
+                columns[i] = [
+                    0 if pd.isna(v) else v if np.isfinite(v) else 0 for v in columns[i]
+                ]
+            result = pd.Series([0] * len(columns[0]))
+            c = np.array(columns)
+            result += (np.array(m, ndmin=3) * (c.T[:, :, None] * c.T[:, None])).sum(
+                axis=(1, 2)
+            )
+            return np.maximum(result.values, 0) ** 0.5
+
+        # standard functions based on numpy
+        self.globals = {
+            "MAX": np.maximum,
+            "MIN": np.minimum,
+            "SUM": np.sum,
+            "ABS": np.abs,
+            "max": np.maximum,
+            "min": np.minimum,
+            "sum": np.sum,
+            "abs": np.abs,
+            "np": np,
+            "nan": np.nan,
+        }
+        # differentiate between function with and without logging
+        if self.params is not None and STATISTICS in self.params.get(
+            "intermediate_results", []
+        ):
+            self.globals["MEAN"] = self.globals["mean"] = _mean_with_logging
+            self.globals["STD"] = self.globals["std"] = _std_with_logging
+            self.globals["QUANTILE"] = self.globals["quantile"] = _quantile_with_logging
+        else:
+            self.globals["MEAN"] = self.globals["mean"] = np.mean
+            self.globals["STD"] = self.globals["std"] = np.std
+            self.globals["QUANTILE"] = self.globals["quantile"] = np.quantile
+
+        # internal functions defined above
+        self.globals["_abs"] = _abs
         self.globals["_tol"] = _tol
-        self.globals["_equal"] = _equal
-        self.globals["_unequal"] = _unequal
-        self.globals["_multiply"] = _multiply
-        self.globals["_divide"] = _divide
+        self.globals["_round"] = _round
+        if self.params is not None and COMPARISONS in self.params.get(
+            "intermediate_results", []
+        ):
+            self.globals["_eq"] = _eq_with_logging
+            self.globals["_ne"] = _ne_with_logging
+            self.globals["_ge"] = _ge_with_logging
+            self.globals["_le"] = _le_with_logging
+            self.globals["_gt"] = _gt_with_logging
+            self.globals["_lt"] = _lt_with_logging
+        else:
+            self.globals["_eq"] = _eq
+            self.globals["_ne"] = _ne
+            self.globals["_ge"] = _ge
+            self.globals["_le"] = _le
+            self.globals["_gt"] = _gt
+            self.globals["_lt"] = _lt
+        self.globals["_mul"] = _mul
+        self.globals["_div"] = _div
+        self.globals["_corr"] = _corr
+
+    def datatype_not_apply_xbrl_tolerance(self, value):
+        return any(
+            [
+                p(value)
+                for p in [
+                    pd.api.types.is_string_dtype,
+                    pd.api.types.is_bool_dtype,
+                    pd.api.types.is_datetime64_ns_dtype,
+                ]
+            ]
+        )
+
+    def _log(
+        self,
+        left_side,
+        right_side,
+        min_left,
+        max_left,
+        min_right,
+        max_right,
+        operator,
+    ):
+        """ """
+        # {left-right=diff} operator [a, b] of [a]
+        if hasattr(min_left, "__iter__") and hasattr(max_left, "__iter__"):
+            # left side is a list
+            left_side = [float(np.round(item, 8)) for item in left_side]
+            min_left = [float(np.round(item, 8)) for item in min_left]
+            max_left = [float(np.round(item, 8)) for item in max_left]
+            if hasattr(min_right, "__iter__") and hasattr(max_right, "__iter__"):
+                # right side is a list
+                right_side = [float(np.round(item, 8)) for item in right_side]
+                min_right = [float(np.round(item, 8)) for item in min_right]
+                max_right = [float(np.round(item, 8)) for item in max_right]
+                if len(self._eval_logs) == 0:
+                    for idx in range(len(left_side)):
+                        diff = np.round(left_side[idx] - right_side[idx], 8)
+                        s = (
+                            "{"
+                            + str(left_side[idx])
+                            + " - "
+                            + str(right_side[idx])
+                            + " = "
+                            + str(diff)
+                            + "} "
+                            + operator
+                            + " "
+                        )
+                        lower_bound = (
+                            min_left[idx]
+                            - left_side[idx]
+                            - max_right[idx]
+                            + right_side[idx]
+                        )
+                        upper_bound = (
+                            max_left[idx]
+                            - left_side[idx]
+                            - min_right[idx]
+                            + right_side[idx]
+                        )
+                        if lower_bound == upper_bound:
+                            s += "[" + str(lower_bound) + "]"
+                        else:
+                            s += "[" + str(lower_bound) + ", " + str(upper_bound) + "]"
+                        self._eval_logs.append(s)
+                else:
+                    for idx in range(len(left_side)):
+                        diff = np.round(left_side[idx] - right_side[idx], 8)
+                        s = (
+                            "{"
+                            + str(left_side[idx])
+                            + " - "
+                            + str(right_side[idx])
+                            + " = "
+                            + str(diff)
+                            + "} "
+                            + operator
+                            + " "
+                        )
+                        lower_bound = np.round(
+                            min_left[idx]
+                            - left_side[idx]
+                            - max_right[idx]
+                            + right_side[idx],
+                            8,
+                        )
+                        upper_bound = np.round(
+                            max_left[idx]
+                            - left_side[idx]
+                            - min_right[idx]
+                            + right_side[idx],
+                            8,
+                        )
+                        if lower_bound == upper_bound:
+                            s += "[" + str(lower_bound) + "]"
+                        else:
+                            s += "[" + str(lower_bound) + ", " + str(upper_bound) + "]"
+                        self._eval_logs[idx] += "; " + s
+            else:
+                # right side is an item
+                right_side = float(np.round(right_side, 8))
+                max_right = float(np.round(max_right, 8))
+                min_right = float(np.round(min_right, 8))
+                if len(self._eval_logs) == 0:
+                    for idx in range(len(left_side)):
+                        diff = np.round(left_side[idx] - right_side)
+                        s = (
+                            "{"
+                            + str(left_side[idx])
+                            + " - "
+                            + str(right_side)
+                            + " = "
+                            + str(diff)
+                            + "}"
+                        )
+                        self._eval_logs.append(s)
+                else:
+                    for idx in range(len(left_side)):
+                        diff = np.round(left_side[idx] - right_side, 8)
+                        s = (
+                            "{"
+                            + str(left_side[idx])
+                            + " - "
+                            + str(right_side)
+                            + " = "
+                            + str(diff)
+                            + "}"
+                        )
+                        self._eval_logs[idx] += "; " + s
+                for idx in range(len(self._eval_logs)):
+                    self._eval_logs[idx] += " " + operator + " "
+                for idx in range(len(left_side)):
+                    if operator in ["==", "!="]:
+                        lower_bound = np.round(
+                            min_left[idx] - left_side[idx] - max_right + right_side, 8
+                        )
+                        upper_bound = np.round(
+                            max_left[idx] - left_side[idx] - min_right + right_side, 8
+                        )
+                        if lower_bound == upper_bound:
+                            self._eval_logs[idx] += "[" + str(lower_bound) + "]"
+                        else:
+                            self._eval_logs[idx] += (
+                                "[" + str(lower_bound) + ", " + str(upper_bound) + "]"
+                            )
+                    elif operator in ["<=", "<"]:
+                        bound = np.round(
+                            max_right - right_side - min_left[idx] + left_side[idx], 8
+                        )
+                        self._eval_logs[idx] += "[" + str(bound) + "]"
+                    elif operator in [">=", ">"]:
+                        bound = np.round(
+                            min_right - right_side - max_left[idx] + left_side[idx], 8
+                        )
+                        self._eval_logs[idx] += "[" + str(bound) + "]"
+        else:
+            # left side is an item
+            left_side = float(np.round(left_side, 8))
+            max_left = float(np.round(max_left, 8))
+            min_left = float(np.round(min_left, 8))
+            if hasattr(min_right, "__iter__") and hasattr(max_right, "__iter__"):
+                # right side is a list
+                right_side = [float(np.round(item, 8)) for item in right_side]
+                min_right = [float(np.round(item, 8)) for item in min_right]
+                max_right = [float(np.round(item, 8)) for item in max_right]
+                if len(self._eval_logs) == 0:
+                    for idx in range(len(right_side)):
+                        diff = np.round(left_side - right_side[idx], 8)
+                        s = (
+                            "{"
+                            + str(left_side)
+                            + " - "
+                            + str(right_side[idx])
+                            + " = "
+                            + str(diff)
+                            + "}"
+                        )
+                        self._eval_logs.append(s)
+                else:
+                    for idx in range(len(right_side)):
+                        diff = np.round(left_side - right_side[idx], 8)
+                        s = (
+                            "{"
+                            + str(left_side)
+                            + " - "
+                            + str(right_side[idx])
+                            + " = "
+                            + str(diff)
+                            + "}"
+                        )
+                        self._eval_logs[idx] += "; " + s
+                for idx in range(len(self._eval_logs)):
+                    self._eval_logs[idx] += " " + operator + " "
+                for idx in range(len(right_side)):
+                    if operator in ["==", "!="]:
+                        lower_bound = np.round(
+                            min_left - left_side - max_right[idx] + right_side[idx], 8
+                        )
+                        upper_bound = np.round(
+                            max_left - left_side - min_right[idx] + right_side[idx], 8
+                        )
+                        if lower_bound == upper_bound:
+                            self._eval_logs[idx] += "[" + str(lower_bound) + "]"
+                        else:
+                            self._eval_logs[idx] += (
+                                "[" + str(lower_bound) + ", " + str(upper_bound) + "]"
+                            )
+                    elif operator in ["<=", "<"]:
+                        bound = np.round(
+                            max_right[idx] - right_side[idx] - min_left + left_side, 8
+                        )
+                        self._eval_logs[idx] += "[" + str(bound) + "]"
+                    elif operator in [">=", ">"]:
+                        bound = np.round(
+                            min_right[idx] - right_side[idx] - max_left + left_side, 8
+                        )
+                        self._eval_logs[idx] += "[" + str(bound) + "]"
+
+            else:
+                # right side is a item
+                right_side = float(np.round(right_side, 8))
+                max_right = float(np.round(max_right, 8))
+                min_right = float(np.round(min_right, 8))
+                self._eval_logs += (
+                    "{"
+                    + str(left_side)
+                    + " - "
+                    + str(right_side)
+                    + " = "
+                    + str(left_side - right_side)
+                    + "}"
+                )
+                self._eval_logs += " " + operator + " "
+                if operator in ["==", "!="]:
+                    lower_bound = np.round(
+                        min_left - left_side - max_right + right_side, 8
+                    )
+                    upper_bound = np.round(
+                        max_left - left_side - min_right + right_side, 8
+                    )
+                    self._eval_logs += (
+                        "[" + str(lower_bound) + ", " + str(upper_bound) + "]"
+                    )
+                elif operator in ["<=", "<"]:
+                    bound = np.round(max_right - right_side - min_left + left_side, 8)
+                    self._eval_logs += "[" + str(bound) + "]"
+                elif operator in [">=", ">"]:
+                    bound = np.round(min_right - right_side - max_left + left_side, 8)
+                    self._eval_logs += "[" + str(bound) + "]"
 
     def set_params(self, params):
         """
@@ -356,15 +933,23 @@ class CodeEvaluator:
           provided parameters and validates the tolerance settings.
         """
         self.params = params
-        self.tolerance = self.params.get("tolerance", None)
-        if self.tolerance is not None:
-            if "default" not in self.tolerance.keys():
-                raise Exception("No 'default' key found in tolerance definition.")
-            for key in self.tolerance.keys():
-                if " " in key:
-                    raise Exception(
-                        "No spaces allowed in keys of tolerance definition."
-                    )
+        if params is not None:
+            # set up tolerance dictionary
+            self.tolerance = self.params.get("tolerance", None)
+            if self.tolerance is not None:
+                if "default" not in self.tolerance.keys():
+                    raise Exception("No 'default' key found in tolerance definition.")
+                for key in self.tolerance.keys():
+                    if " " in key:
+                        raise Exception(
+                            "No spaces allowed in keys of tolerance definition."
+                        )
+            # set up matrices for corr-function
+            matrices = self.params.get("matrices", None)
+            if matrices is not None:
+                self.matrices = dict()
+                for key, value in matrices.items():
+                    self.matrices[key] = np.array(value)
 
     def set_data(
         self,
@@ -387,7 +972,7 @@ class CodeEvaluator:
         """
         self.globals[DUNDER_DF] = dataframe
 
-    def evaluate(
+    def evaluate_dict(
         self,
         expressions: dict = {},
         encodings: dict = {},
@@ -415,13 +1000,101 @@ class CodeEvaluator:
         - Errors encountered during the evaluation of expressions are logged with a debug level.
 
         """
-        variables = {}
+        variables = dict()
+        if (
+            self.params is not None
+            and len(self.params.get("intermediate_results", [])) > 0
+        ):
+            # enable log is one or more intermediate results is defined
+            logs = pd.Series(
+                index=self.globals[DUNDER_DF].index,
+                data=[""] * len(self.globals[DUNDER_DF].index),
+                dtype="object",
+            )
+            logs_added = False
+        else:
+            logs = None
         for key in expressions.keys():
+            if logs is not None:
+                # initialize logs
+                self._mean_logs = []
+                self._std_logs = []
+                self._quantile_logs = []
+                self._eval_logs = []
+                if key == "X":
+                    logs += "if ("
+                    logs_added = False
+                elif key == "Y":
+                    logs += " then ("
+                    logs_added = False
             try:
                 variables[key] = eval(expressions[key], self.globals, encodings)
+                if logs is not None:
+                    # collect log of statistics
+                    log = []
+                    if len(self._mean_logs) > 0:
+                        log.append("; ".join(self._mean_logs))
+                    if len(self._std_logs) > 0:
+                        log.append("; ".join(self._std_logs))
+                    if len(self._quantile_logs) > 0:
+                        log.append("; ".join(self._quantile_logs))
+                    # put logs in pd.Series as a strings
+                    if len(self._eval_logs) > 0:
+                        if logs_added:
+                            logs += "; "
+                        logs += self._eval_logs
+                        logs_added = True
+                    if len(log) > 0:
+                        if logs_added:
+                            logs += "; "
+                        logs += "; ".join(log)
+                        logs_added = True
+                    if key != "N":
+                        logs += ")"
             except Exception as e:
                 self.logger.debug(
                     "Error evaluating the code '" + expressions[key] + "': " + repr(e)
                 )
                 variables[key] = np.nan
-        return variables
+        return variables, logs
+
+    def evaluate_str(
+        self,
+        expression: str,
+        encodings: dict = {},
+    ) -> dict:
+        """
+        Evaluates a single mathematical expressions and .
+
+        This method processes each expression provided in the `expressions` dictionary,
+        evaluating it using the functions and variables available in the `globals` and
+        additional encoding values from the `encodings` dictionary. If an expression cannot
+        be evaluated, it logs an error and assigns `NaN` as the result for that expression.
+
+        Parameters:
+        - expressions (dict): A dictionary where keys are variable names and values are
+          the corresponding mathematical expressions as strings to be evaluated.
+        - encodings (dict): A dictionary of additional variables or encoding values to be
+          used during the evaluation of expressions.
+
+        Returns:
+        - dict: A dictionary where keys are the variable names from the `expressions`
+          dictionary, and values are the results of evaluating those expressions. If an error
+          occurs during evaluation, the corresponding value is set to `NaN`.
+
+        Logs:
+        - Errors encountered during the evaluation of expressions are logged with a debug level.
+
+        """
+        variable = ""
+        log = ""
+        try:
+            variable = eval(expression, self.globals, encodings)
+            log = variable
+        except Exception as e:
+            self.logger.debug(
+                "Error evaluating the code '" + expression + "': " + repr(e)
+            )
+            variable = np.nan
+            log = np.nan
+        return variable, log

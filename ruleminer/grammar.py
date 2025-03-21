@@ -77,6 +77,11 @@ _function = (
     mean \
     std \
     exact \
+    corr \
+    round \
+    floor \
+    ceil \
+    table \
     MIN \
     MAX \
     ABS \
@@ -89,7 +94,12 @@ _function = (
     COUNTIF \
     MEAN \
     STD \
-    EXACT"
+    EXACT \
+    CORR \
+    ROUND \
+    FLOOR \
+    CEIL \
+    TABLE"
     )
     | _timedelta_functions
     | _timedate_functions
@@ -114,9 +124,11 @@ _addop = pyparsing.Literal("+") | pyparsing.Literal("-")
 _multop = pyparsing.Literal("*") | pyparsing.Literal("/")
 _expop = pyparsing.Literal("**")
 _compa_op = (
-    pyparsing.one_of(">= > <= < != == in IN match MATCH")
+    pyparsing.one_of(">= > <= < != == in IN match MATCH contains CONTAINS")
     | pyparsing.Literal("not in")
     | pyparsing.Literal("NOT IN")
+    | pyparsing.Literal("not contains")
+    | pyparsing.Literal("NOT CONTAINS")
 )
 
 _list = pyparsing.Forward()
@@ -213,6 +225,8 @@ simple_condition_expression = pyparsing.infixNotation(
             pyparsing.opAssoc.LEFT,
         ),
     ],
+    lpar=pyparsing.Literal("("),
+    rpar=pyparsing.Literal(")"),
 )
 
 ################################################################################
@@ -235,16 +249,20 @@ _function_param = (
     simple_condition_expression | simple_math_expression | list_comprehension_expression
 )
 _function_params = _function_param + (_sep + _function_param)[...]
-function_expression = pyparsing.Forward()
-function_expression <<= pyparsing.Group(
+function_expression = pyparsing.Group(
     _function + pyparsing.Group(_lpar + _function_params + _rpar)
+)
+# the following is to allow an additional exact-function around a function
+exact_function_expression = pyparsing.Group(
+    pyparsing.one_of("EXACT exact")
+    + pyparsing.Group(_lpar + function_expression + _rpar)
 )
 
 ################################################################################
 # definition of a math_expression
 ################################################################################
 math_expression = pyparsing.Forward()
-_math_element = function_expression | simple_math_expression
+_math_element = exact_function_expression | function_expression | simple_math_expression
 _math_atom = _math_element | pyparsing.Group(_lpar + math_expression + _rpar)
 _math_factor = pyparsing.Forward()
 # if expression contains ** then put parentheses around this part
@@ -279,6 +297,8 @@ condition_expression = pyparsing.infixNotation(
             pyparsing.opAssoc.LEFT,
         ),
     ],
+    lpar=pyparsing.Literal("("),
+    rpar=pyparsing.Literal(")"),
 )
 
 ################################################################################
