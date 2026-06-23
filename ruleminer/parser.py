@@ -33,6 +33,8 @@ class RuleParser:
         self,
     ):
         """ """
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.NOTSET)
         self.keywords_function_mapping = [
             # first comparison operators
             (set(["==", "!=", "<", "<=", ">", ">="]), self.parse_comparison),
@@ -278,7 +280,7 @@ class RuleParser:
         corr_params = expression[idx + 1]
         matrix_key = corr_params[1][1:-1]
         if matrix_key not in list(self.params["matrices"].keys()):
-            logging.error(
+            self.logger.error(
                 "Matrix key is not in predefined matrices dictionary of parameters."
             )
         res = "corr" + self.parse(
@@ -314,7 +316,7 @@ class RuleParser:
         table_params = expression[idx + 1][3:][0]
         table_name = expression[idx + 1][1][1:-1]
         if table_name not in list(self.params.get("tables", {}).keys()):
-            logging.error(
+            self.logger.error(
                 "Table name is not in predefined tables dictionary of parameters."
             )
         res = (
@@ -489,7 +491,7 @@ class RuleParser:
         _, string, _, separator, _, position, _ = expression[idx + 1]
         if position[1:-1].lower() not in ["all", "any"]:
             if not position.isdigit():
-                logging.error(
+                self.logger.error(
                     "Third parameter of split function is not a digit, 'all' or 'any', taking first position"
                 )
                 position = "0"
