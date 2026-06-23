@@ -1,5 +1,10 @@
 # History
 
+### 1.0.3 (2026-6-7)
+
+- Small change to logging in parser.py
+- Added lxml >= 5.0 to requirements
+
 ### 1.0.2 (2026-3-24)
 
 - Implemented split-function with all/any instead of position to check whether all or any comma separated elements are in a list
