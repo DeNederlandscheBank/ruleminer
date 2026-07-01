@@ -988,7 +988,7 @@ class TestRuleminer(unittest.TestCase):
     def test_35(self):
         actual = (
             ruleminer.math_expression()
-            .parse_string('substr({"Type"}, 0, 3)', parseAll=True)
+            .parse_string('substr({"Type"}, 0, 3)', parse_all=True)
             .as_list()
         )
         expected = [["substr", ["(", '{"Type"}', ",", "0", ",", "3", ")"]]]
@@ -997,7 +997,7 @@ class TestRuleminer(unittest.TestCase):
     def test_36(self):
         actual = (
             ruleminer.rule_expression()
-            .parse_string('(substr({"Type"}, 0, 3) > 0)', parseAll=True)
+            .parse_string('(substr({"Type"}, 0, 3) > 0)', parse_all=True)
             .as_list()
         )
         expected = [
@@ -1008,7 +1008,7 @@ class TestRuleminer(unittest.TestCase):
     def test_37(self):
         actual = (
             ruleminer.math_expression()
-            .parse_string('max(substr({"Type"}, 0, 1) in ["d"])', parseAll=True)
+            .parse_string('max(substr({"Type"}, 0, 1) in ["d"])', parse_all=True)
             .as_list()
         )
         expected = [
@@ -1028,7 +1028,7 @@ class TestRuleminer(unittest.TestCase):
     def test_38(self):
         actual = (
             ruleminer.rule_expression()
-            .parse_string('(max(substr({"Type"}, 0, 1) in ["d"]) > 0)', parseAll=True)
+            .parse_string('(max(substr({"Type"}, 0, 1) in ["d"]) > 0)', parse_all=True)
             .as_list()
         )
         expected = [
@@ -1062,7 +1062,7 @@ class TestRuleminer(unittest.TestCase):
         actual = (
             ruleminer.rule_expression()
             .parse_string(
-                '({"Own funds"} <= quantile({"Own funds"}, 0.95))', parseAll=True
+                '({"Own funds"} <= quantile({"Own funds"}, 0.95))', parse_all=True
             )
             .as_list()
         )
@@ -1523,6 +1523,48 @@ class TestRuleminer(unittest.TestCase):
         self.assertListEqual(list(actual[0]), expected[0])
         self.assertListEqual(list(actual[1]), expected[1])
         self.assertListEqual(list(actual[2]), expected[2])
+
+    def test_50c(self):
+        formulas = [
+            '(SPLIT({"C"}, ",", "all") in ["AB", "C", "D"])',
+        ]
+        df = pd.DataFrame(
+            [
+                ["Test_1", 0.25, 1.0, "AB,C,D"],
+                [
+                    "Test_2",
+                    1.0,
+                    1.0,
+                    "C,D,E",
+                ],
+                ["Test_3", 0.0, 0.0, "A"],
+                ["Test_3", 0.0, 0.0, "AB"],
+            ],
+            columns=["Name", "A", "B", "C"],
+        )
+        r = ruleminer.RuleMiner(
+            templates=[{"expression": form} for form in formulas],
+            params={},
+        )
+        r = ruleminer.RuleMiner(rules=r.rules, data=df, params={})
+        r.evaluate()
+        actual = (
+            r.results.sort_values(by=["indices"], ignore_index=True)
+            .merge(df, how="left", left_on=["indices"], right_index=True)[
+                ["Name", "result"]
+            ]
+            .values
+        )
+        expected = [
+            ["Test_1", True],
+            ["Test_2", False],
+            ["Test_3", False],
+            ["Test_3", True],
+        ]
+        self.assertListEqual(list(actual[0]), expected[0])
+        self.assertListEqual(list(actual[1]), expected[1])
+        self.assertListEqual(list(actual[2]), expected[2])
+        self.assertListEqual(list(actual[3]), expected[3])
 
     def test_51a(self):
         # Specify tolerance input parameters for ruleminer
@@ -2438,6 +2480,131 @@ class TestRuleminer(unittest.TestCase):
         ]
         assert not ruleminer.contains_string(expression)
         assert ruleminer.contains_column(expression)
+
+    def test_multiple_templates(self):
+        templates = [
+            {
+                "expression": 'if ({"age"} > 30) then ({"revenue"} > 1000)',
+                "encodings": {"excel_id": "R1"},
+            },
+            {
+                "expression": 'if ({"zip"} == {"zip"}) then ({"state"} == {"state"})',
+                "encodings": {"excel_id": "R2"},
+            },
+        ]
+
+        df = pd.DataFrame(
+            {
+                "customer": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+                "revenue": [
+                    200,
+                    350,
+                    400,
+                    2121,
+                    4000,
+                    2100,
+                    2300,
+                    400,
+                    50,
+                    300,
+                    950,
+                    5000,
+                    6000,
+                    7000,
+                    8000,
+                ],
+                "age": [22, 20, 21, 41, 50, 45, 62, 20, 18, 21, 35, 11, 11, 29, 29],
+                "gender": [
+                    "male",
+                    "female",
+                    "male",
+                    "female",
+                    "male",
+                    "female",
+                    "male",
+                    "female",
+                    "male",
+                    "female",
+                    "female",
+                    "female",
+                    "female",
+                    "male",
+                    "male",
+                ],
+                "state": [
+                    "CA",
+                    "NY",
+                    "NY",
+                    "CA",
+                    "CA",
+                    "NY",
+                    "NY",
+                    "CA",
+                    "NY",
+                    None,
+                    "CA",
+                    "CA",
+                    "CA",
+                    "NY",
+                    "NY",
+                ],
+                "zip": [
+                    90210,
+                    10025,
+                    10025,
+                    90210,
+                    90210,
+                    90210,
+                    10025,
+                    90210,
+                    10025,
+                    90210,
+                    90210,
+                    90210,
+                    90210,
+                    10025,
+                    10025,
+                ],
+                "incoming_orders": [
+                    100,
+                    350,
+                    400,
+                    2500,
+                    4000,
+                    2100,
+                    2300,
+                    500,
+                    60,
+                    300,
+                    800,
+                    5000,
+                    6000,
+                    7000,
+                    8000,
+                ],
+            }
+        ).set_index("customer")
+
+        parameters = {
+            "filter": {"confidence": 0.0, "abs support": 0.0},
+        }
+        rules1 = None
+        for t in templates:
+            r1 = ruleminer.RuleMiner(templates=[t], data=df, params=parameters)
+            if rules1 is None:
+                rules1 = r1.rules
+            else:
+                rules1 = pd.concat([rules1, r1.rules], ignore_index=True)
+
+        r2 = ruleminer.RuleMiner(templates=templates, data=df, params=parameters)
+        rules2 = r2.rules
+        self.assertListEqual(list(rules1.index), list(rules2.index))
+        self.assertListEqual(
+            list(list(rules1.values)[0])[1:], list(list(rules2.values)[0])[1:]
+        )
+        self.assertListEqual(
+            list(list(rules1.values)[1])[1:], list(list(rules2.values)[1])[1:]
+        )
 
     # def setUp_templates(self):
     #     """Set up test fixtures, if any."""
